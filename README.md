@@ -1,44 +1,44 @@
 # bashon
 
-Bashon turns decorated Python callables into CLI commands with very little setup. Basically a Python to CLI package to allow simple execution of python code by your AI agents.
-
-It is built for two modes:
-
-- Agent mode by default, where output is JSON and easy for tools or agents to consume.
-- Human mode with `--human`, where help and results look like a conventional CLI.
-
-## What Bashon gives you
-
-- Decorate a function with `@bashon`
-- Run it directly from a file or module
-- Get argument parsing from Python type hints
-- Get help text from docstrings and field metadata
-- Expose structured inputs from dataclasses and Pydantic models
-- Reuse the same callable as a Bashon command and a LangChain `@tool`
-
-## Install
-
-For local development in this repo:
-
-```bash
-uv pip install -e .
-```
-
-Or with pip:
-
-```bash
-pip install -e .
-```
-
-Then the `bashon` command is available on your path.
-
-## The simplest possible example
-
-Start with any python function you currently have... and add the `bashon` decorator.
+Turn any Python function into a CLI command. One decorator. That's it.
 
 ```python
 from bashon import bashon
 
+@bashon
+def greet(name: str, excited: bool = False) -> str:
+    """Greet somebody."""
+    return f"Hello, {name}{'!' if excited else '.'}"
+```
+
+```bash
+$ bashon run hello.py:greet Ada --excited
+```
+```json
+{"ok": true, "result": "Hello, Ada!"}
+```
+
+## Why bashon?
+
+Most CLI frameworks make you write a bunch of scaffolding just to call a function from the terminal. Bashon skips all that. You already have typed Python functions with docstrings — that's enough.
+
+And here's the thing that makes it different: **bashon is agent-first**. The default output is structured JSON, ready for AI agents, pipelines, and tooling to consume. Add `--human` when *you* want to read it. Most CLI tools do it the other way around — human-first, then you bolt on machine-readable output as an afterthought.
+
+Zero runtime dependencies. Python 3.10+.
+
+## Install
+
+```bash
+pip install bashon
+```
+
+## Quick start
+
+Write a function, decorate it, run it:
+
+```python
+# hello.py
+from bashon import bashon
 
 @bashon
 def greet(name: str, excited: bool = False) -> str:
@@ -51,46 +51,18 @@ def greet(name: str, excited: bool = False) -> str:
     return f"Hello, {name}{'!' if excited else '.'}"
 ```
 
-Then run it directly from the terminal with:
-
 ```bash
-bashon run hello.py:greet Ada
-```
+# Agent mode (default) — structured JSON
+$ bashon run hello.py:greet Ada
+{"ok": true, "result": "Hello, Ada."}
 
-Output in the default agent mode:
-
-```json
-{
-  "mode": "agent",
-  "ok": true,
-  "result": "Hello, Ada."
-}
-```
-
-Turn on the boolean flag:
-
-```bash
-bashon --human run hello.py:greet Ada --excited
-```
-
-Human-friendly output:
-
-```text
+# Human mode — just the result
+$ bashon --human run hello.py:greet Ada --excited
 Hello, Ada!
-```
 
-Ask Bashon for help:
-
-```bash
-bashon --human run hello.py:greet --help
-```
-
-Help output:
-
-```text
-Usage: bashon run hello.py:greet [--help]
-                                 [--excited | --no-excited]
-                                 name
+# Help text — pulled straight from your docstring
+$ bashon --human run hello.py:greet --help
+Usage: bashon run hello.py:greet [--help] [--excited | --no-excited] name
 
 Greet somebody.
 
@@ -103,208 +75,98 @@ options:
                         Add extra emphasis.
 ```
 
-You can also inspect the machine-readable schema:
+That's the whole workflow. Type hints become arguments. Docstrings become help text. Defaults become optional flags.
+
+## Agent mode vs human mode
+
+Agent mode is the default because bashon is built for automation first:
+
+| | Agent mode (default) | Human mode (`--human`) |
+|---|---|---|
+| Success | JSON envelope | Plain text or pretty-printed JSON |
+| Errors | Structured JSON | Readable message |
+| Schema | `bashon spec` | `bashon --human spec` |
+
+## Built-in commands
 
 ```bash
-bashon spec hello.py:greet
+bashon run TARGET [ARGS...]      # Run a command
+bashon spec TARGET               # Print the schema (great for agents)
+bashon add ALIAS TARGET          # Save a shortcut
+bashon list                      # Show saved shortcuts
+bashon remove ALIAS              # Delete a shortcut
 ```
 
-Example output:
-
-```json
-{
-  "mode": "agent",
-  "ok": true,
-  "spec": {
-    "commands": [
-      {
-        "callable": "greet",
-        "description": "Greet somebody.",
-        "kind": "command",
-        "name": "greet",
-        "parameters": [
-          {
-            "aliases": [],
-            "cli_name": "name",
-            "help": "Who to greet.",
-            "kind": "positional",
-            "name": "name",
-            "required": true,
-            "type": "str"
-          },
-          {
-            "aliases": [],
-            "cli_name": "excited",
-            "default": false,
-            "help": "Add extra emphasis.",
-            "kind": "flag",
-            "name": "excited",
-            "required": false,
-            "type": "bool"
-          }
-        ],
-        "source": "hello.py:greet",
-        "summary": "Greet somebody."
-      }
-    ],
-    "kind": "collection",
-    "target": "hello.py:greet"
-  }
-}
-```
-
-## Running commands
-
-There are two common ways to run a command:
+Targets can be file paths or module paths:
 
 ```bash
-bashon run path/to/file.py:callable
-bashon run some.module.path:callable
+bashon run hello.py:greet Ada
+bashon run mypackage.commands:deploy --env prod
 ```
 
-If a module or file exposes multiple `@bashon` commands, Bashon treats it like a command group:
+---
 
-```bash
-bashon --human spec some.module.path
-```
+## Going further
 
-That will list the discovered command names and summaries.
+### Structured inputs with dataclasses
 
-## Human mode vs agent mode
-
-Agent mode is the default:
-
-- Success output is wrapped in a JSON envelope
-- Errors are returned as structured JSON
-- Specs are emitted as JSON
-
-Human mode is enabled with `--human`:
-
-- Strings print as plain text
-- Mappings, dataclasses, and lists print as pretty JSON
-- Help text uses standard CLI formatting
-
-That makes Bashon work well both for terminals and for agent/tooling workflows.
-
-## Structured inputs with dataclasses
-
-When a parameter is a dataclass, Bashon exposes it in two ways:
-
-- As one JSON object argument like `--user '{"name":"Ada","age":30}'`
-- As flattened field flags like `--user.name Ada --user.age 30`
-
-Example:
+When a parameter is a dataclass, bashon lets you pass it as JSON or as flattened flags:
 
 ```python
 from dataclasses import dataclass, field
-
 from bashon import bashon
-
 
 @dataclass
 class User:
     name: str = field(metadata={"help": "Display name"})
     age: int = field(default=0, metadata={"help": "Age in years"})
 
-
 @bashon
-def describe(user: User) -> dict[str, object]:
-    """Describe a structured user."""
+def describe(user: User) -> dict:
+    """Describe a user."""
     return {"name": user.name, "age": user.age}
 ```
 
-Run it with field flags:
-
 ```bash
-bashon run app.py:describe --user.name Ada --user.age 30
+# Flattened flags
+$ bashon run app.py:describe --user.name Ada --user.age 30
+
+# Or JSON
+$ bashon run app.py:describe --user '{"name": "Ada", "age": 30}'
+
+# Mix both — flags override JSON values
+$ bashon run app.py:describe --user '{"name": "Wrong", "age": 30}' --user.name Ada
 ```
 
-Or with JSON:
+### Pydantic models
 
-```bash
-bashon --human run app.py:describe --user '{"name":"Ada","age":30}'
-```
-
-And you can mix them. Field flags win over JSON values when both are provided:
-
-```bash
-bashon run app.py:describe \
-  --user '{"name":"Wrong","age":4}' \
-  --user.name Ada
-```
-
-That produces:
-
-```json
-{
-  "mode": "agent",
-  "ok": true,
-  "result": {
-    "age": 4,
-    "name": "Ada"
-  }
-}
-```
-
-This is especially handy when an agent or shell script wants to override only one nested value.
-
-## Pydantic models and Pydantic dataclasses
-
-Bashon also supports structured inputs backed by Pydantic models, using the same flattened CLI shape:
+Same deal, works out of the box:
 
 ```python
 from bashon import bashon
 from pydantic import BaseModel, Field
 
-
 class Profile(BaseModel):
     name: str = Field(description="Profile name")
     age: int = Field(default=0, description="Profile age")
 
-
 @bashon
-def describe_profile(profile: Profile) -> dict[str, object]:
+def describe_profile(profile: Profile) -> dict:
     """Describe a profile."""
     return profile.model_dump(mode="json")
 ```
 
-Run it like this:
-
 ```bash
-bashon run app.py:describe_profile --profile.name Ada --profile.age 5
+$ bashon run app.py:describe_profile --profile.name Ada --profile.age 5
 ```
 
-Or with a JSON object:
+### Parameter aliases with `Annotated`
 
-```bash
-bashon run app.py:describe_profile --profile '{"name":"Ada","age":5}'
-```
-
-Pydantic dataclasses fit naturally into the same structured-input flow because Bashon already knows how to flatten dataclass fields.
-
-## Where help text comes from
-
-Bashon pulls help from a few places:
-
-- Function docstrings for command summaries and parameter descriptions
-- Dataclass field metadata like `field(metadata={"help": "..."})`
-- Pydantic field descriptions like `Field(description="...")`
-- `typing.Annotated[..., Param(...)]` metadata
-
-That means you can keep documentation close to the code and have it show up in both:
-
-- `bashon --human run ... --help`
-- `bashon spec ...`
-
-## Custom parameter metadata with `Annotated`
-
-Use `bashon.Param` with `typing.Annotated` when you want aliases or explicit help on a scalar parameter.
+Use `Param` for aliases or explicit help on individual parameters:
 
 ```python
 from typing import Annotated
-
 from bashon import Param, bashon
-
 
 @bashon
 def nicknamed(
@@ -314,60 +176,26 @@ def nicknamed(
     return name
 ```
 
-Now both of these work:
+```bash
+$ bashon run app.py:nicknamed --person Ada
+```
+
+### Command groups
+
+If a module has multiple `@bashon` functions, bashon treats it as a command group:
 
 ```bash
-bashon run app.py:nicknamed Ada
-bashon run app.py:nicknamed --person Ada
+$ bashon --human spec mymodule.py
 ```
 
-## Registering aliases
+This lists all discovered commands with their summaries.
 
-If you want a stable local command name, register an alias:
+### Class-based commands
 
-```bash
-bashon add hello hello.py:greet
-```
-
-Result:
-
-```json
-{
-  "mode": "agent",
-  "ok": true,
-  "result": {
-    "alias": "hello",
-    "status": "added",
-    "target": "hello.py:greet"
-  }
-}
-```
-
-Then run it directly:
-
-```bash
-bashon hello Ada
-```
-
-List aliases:
-
-```bash
-bashon list
-```
-
-Remove one:
-
-```bash
-bashon remove hello
-```
-
-## Class-based commands
-
-Bashon can discover commands from classes too, as long as they are `@staticmethod` or `@classmethod`.
+`@staticmethod` and `@classmethod` work too:
 
 ```python
 from bashon import bashon
-
 
 class Ops:
     @staticmethod
@@ -381,114 +209,72 @@ class Ops:
         return f"{cls.__name__}:{count}"
 ```
 
-Those become commands like:
-
 ```bash
-bashon run app.py:Ops.echo hello
-bashon run app.py:Ops.ping --count 3
+$ bashon run app.py:Ops.echo hello
+$ bashon run app.py:Ops.ping --count 3
 ```
 
-Instance methods are intentionally not exposed.
+### LangChain interop
 
-## Using Bashon with LangChain `@tool`
-
-One of the nicest Bashon workflows is reusing the same function as both:
-
-- A Bashon CLI command
-- A LangChain tool
-
-Bashon supports both decorator orders:
+Reuse the same function as a CLI command *and* a LangChain tool. Both decorator orders work:
 
 ```python
 from bashon import bashon
 from langchain_core.tools import tool
-
 
 @bashon
 @tool
 def add_one(value: int) -> int:
     """Increment a value."""
     return value + 1
-
-
-@tool
-@bashon
-def add_two(value: int) -> int:
-    """Increment a value by two."""
-    return value + 2
 ```
-
-Both can be run by Bashon:
 
 ```bash
-bashon run app.py:add_one 1
-bashon run app.py:add_two 1
+$ bashon run app.py:add_one 1
 ```
 
-This makes it easy to define a function once and reuse it everywhere:
+One function. CLI command. Agent tool. LangChain tool. Done.
 
-- In local CLI workflows
-- In agents
-- In LangChain tool stacks
+### Aliases
 
-## How command naming works
+Save shortcuts for commands you run often:
 
-By default, Bashon converts names to CLI-friendly slugs:
+```bash
+$ bashon add hello hello.py:greet
+$ bashon hello Ada
+$ bashon remove hello
+```
 
-- `my_function` becomes `my-function`
-- `MyClass.runTask` becomes `my-class.run-task`
+### Custom command names
 
-You can override the command name in the decorator:
+Override the default naming (which converts `my_function` to `my-function`):
 
 ```python
-from bashon import bashon
-
-
 @bashon(name="hello")
 def greet(name: str) -> str:
     return f"Hello, {name}"
 ```
 
-## Built-in commands
+### Machine-readable schema
 
-Bashon ships with a small built-in command set:
-
-- `bashon run TARGET [ARGS...]`
-- `bashon spec TARGET [COMMAND]`
-- `bashon add ALIAS TARGET`
-- `bashon list`
-- `bashon remove ALIAS`
-
-Run root help any time with:
+`bashon spec` gives agents everything they need to call your commands:
 
 ```bash
-bashon --human
+$ bashon spec hello.py:greet
 ```
 
-## Design notes
-
-Bashon currently focuses on a tight, predictable surface area:
-
-- Functions are supported
-- `@staticmethod` and `@classmethod` are supported
-- Instance methods are not supported
-- `*args` and `**kwargs` are not exposed
-- Boolean options use `--flag` and `--no-flag`
-
-That narrow scope helps keep discovery, parsing, help text, and structured schemas reliable.
-
-## A practical pattern
-
-A good default pattern is:
-
-1. Start with a plain typed function and `@bashon`
-2. Add a docstring so help output is useful
-3. Move to a dataclass or Pydantic model when the input becomes structured
-4. Add `@tool` if you also want to use the same callable in LangChain
-5. Register a `bashon add` alias if you run it often
-
-That gives you one Python definition that can serve as:
-
-- A local CLI command
-- A machine-readable command for agents
-- A reusable tool in a larger system
+```json
+{
+  "ok": true,
+  "spec": {
+    "commands": [{
+      "name": "greet",
+      "description": "Greet somebody.",
+      "parameters": [
+        {"name": "name", "type": "str", "required": true, "help": "Who to greet."},
+        {"name": "excited", "type": "bool", "required": false, "default": false, "help": "Add extra emphasis."}
+      ]
+    }]
+  }
+}
+```
