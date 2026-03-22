@@ -14,15 +14,17 @@ def greet(name: str, excited: bool = False) -> str:
 ```bash
 $ bashon run hello.py:greet Ada --excited
 ```
-```json
-{"ok": true, "result": "Hello, Ada!"}
+```
+[BASHON:OK]
+[RESULT_TYPE:string]
+Hello, Ada!
 ```
 
 ## Why bashon?
 
 Most CLI frameworks make you write a bunch of scaffolding just to call a function from the terminal. Bashon skips all that. You already have typed Python functions with docstrings — that's enough.
 
-And here's the thing that makes it different: **bashon is agent-first**. The default output is structured JSON, ready for AI agents, pipelines, and tooling to consume. Add `--human` when *you* want to read it. Most CLI tools do it the other way around — human-first, then you bolt on machine-readable output as an afterthought.
+And here's the thing that makes it different: **bashon is agent-first**. The default output uses text-delimited markers that are easy for AI agents to parse — clear `[BASHON:OK]` / `[BASHON:ERROR]` headers, result type labels, and raw payloads that are never wrapped in ambiguous JSON envelopes. Add `--human` when *you* want to read it, or `--format json` for classic JSON envelopes.
 
 Zero runtime dependencies. Python 3.10+.
 
@@ -52,13 +54,19 @@ def greet(name: str, excited: bool = False) -> str:
 ```
 
 ```bash
-# Agent mode (default) — structured JSON
+# Agent mode (default) — text-delimited markers for easy parsing
 $ bashon run hello.py:greet Ada
-{"ok": true, "result": "Hello, Ada."}
+[BASHON:OK]
+[RESULT_TYPE:string]
+Hello, Ada.
 
 # Human mode — just the result
 $ bashon --human run hello.py:greet Ada --excited
 Hello, Ada!
+
+# JSON mode — classic JSON envelope (backward compat)
+$ bashon --format json run hello.py:greet Ada
+{"__bashon__": "1", "ok": true, "result_type": "string", "result": "Hello, Ada."}
 
 # Help text — pulled straight from your docstring
 $ bashon --human run hello.py:greet --help
@@ -77,15 +85,56 @@ options:
 
 That's the whole workflow. Type hints become arguments. Docstrings become help text. Defaults become optional flags.
 
-## Agent mode vs human mode
+## Output formats
 
-Agent mode is the default because bashon is built for automation first:
+Bashon has three output modes, controlled by `--format` or `--human`:
 
-| | Agent mode (default) | Human mode (`--human`) |
-|---|---|---|
-| Success | JSON envelope | Plain text or pretty-printed JSON |
-| Errors | Structured JSON | Readable message |
-| Schema | `bashon spec` | `bashon --human spec` |
+| | Agent mode (default) | JSON mode (`--format json`) | Human mode (`--human`) |
+|---|---|---|---|
+| Success | `[BASHON:OK]` + type + payload | JSON envelope with `result_type` | Plain text |
+| Errors | `[BASHON:ERROR]` + type + message | JSON envelope with error detail | Readable message |
+| Schema | `[BASHON:OK]` + `[SPEC]` + JSON | JSON envelope with spec | Formatted help text |
+
+### Agent mode (default)
+
+Designed for AI agents and automation. Text-delimited markers make it trivial to distinguish metadata from payload — even for less capable models:
+
+```
+[BASHON:OK]
+[RESULT_TYPE:object]
+{"name": "Ada", "age": 30}
+```
+
+Errors include structured context to help agents self-correct:
+
+```
+[BASHON:ERROR]
+[ERROR_TYPE:ParseError]
+[PARAMETER:count]
+[EXPECTED_TYPE:int]
+Missing value for 'count'.
+```
+
+### JSON mode (`--format json`)
+
+Classic JSON envelope for backward compatibility and programmatic access:
+
+```json
+{
+  "__bashon__": "1",
+  "ok": true,
+  "result_type": "object",
+  "result": {"name": "Ada", "age": 30}
+}
+```
+
+### Human mode (`--human` or `--format human`)
+
+Plain text output for humans:
+
+```
+Ada, age 30
+```
 
 ## Built-in commands
 
@@ -263,18 +312,18 @@ def greet(name: str) -> str:
 $ bashon spec hello.py:greet
 ```
 
-```json
+```
+[BASHON:OK]
+[SPEC]
 {
-  "ok": true,
-  "spec": {
-    "commands": [{
-      "name": "greet",
-      "description": "Greet somebody.",
-      "parameters": [
-        {"name": "name", "type": "str", "required": true, "help": "Who to greet."},
-        {"name": "excited", "type": "bool", "required": false, "default": false, "help": "Add extra emphasis."}
-      ]
-    }]
-  }
+  "commands": [{
+    "name": "greet",
+    "description": "Greet somebody.",
+    "return_type": "str",
+    "parameters": [
+      {"name": "name", "type": "str", "required": true, "help": "Who to greet."},
+      {"name": "excited", "type": "bool", "required": false, "default": false, "help": "Add extra emphasis."}
+    ]
+  }]
 }
 ```

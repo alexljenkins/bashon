@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -126,3 +127,31 @@ def lang_b(value: int) -> int:
     """Increment with tool inner metadata."""
 
     return value + 2
+
+
+@bashon
+def json_returner() -> str:
+    """Return a JSON string (tests auto-unwrapping)."""
+
+    return _json.dumps({"key": "value", "number": 42})
+
+
+@bashon
+def void_func() -> None:
+    """Return nothing."""
+
+    pass
+
+
+@bashon
+def exploder() -> str:
+    """Raise an unexpected error."""
+
+    raise RuntimeError("boom")
+
+
+@bashon
+def required_option(*, count: int) -> int:
+    """Function with a required keyword-only (non-positional) parameter."""
+
+    return count

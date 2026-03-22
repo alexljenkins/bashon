@@ -6,6 +6,7 @@ import sys
 from typing import Any, Sequence
 
 from .core import (
+    Format,
     collection_to_spec,
     command_to_spec,
     emit_error,
@@ -22,20 +23,23 @@ from .core import (
 from .errors import BashonError, CommandNotFoundError, ParseError
 from .registry import AliasRegistry, BUILTIN_NAMES
 
+_FORMAT_VALUES = {f.value: f for f in Format}
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the Bashon CLI."""
 
     args = list(sys.argv[1:] if argv is None else argv)
-    human, help_requested, remainder = _split_global_flags(args)
-    registry = AliasRegistry.load()
+    fmt = Format.AGENT
     try:
+        fmt, help_requested, remainder = _split_global_flags(args)
+        registry = AliasRegistry.load()
         if not remainder:
-            if human and not help_requested:
+            if fmt is Format.HUMAN and not help_requested:
                 _print(render_root_help(registry.aliases), stream="stdout")
             else:
                 _print(
-                    emit_spec(root_spec(registry.aliases), human=human, header=render_root_help(registry.aliases)),
+                    emit_spec(root_spec(registry.aliases), format=fmt, header=render_root_help(registry.aliases)),
                     stream="stdout",
                 )
             return 0
@@ -45,50 +49,61 @@ def main(argv: Sequence[str] | None = None) -> int:
             rest = ["--help", *rest]
 
         if root_command in BUILTIN_NAMES:
-            return _handle_builtin(root_command, rest, human=human, registry=registry)
+            return _handle_builtin(root_command, rest, format=fmt, registry=registry)
 
         target = registry.aliases.get(root_command)
         if target is None:
             raise CommandNotFoundError(f"Unknown Bashon command or alias '{root_command}'.")
-        return _handle_target(target, rest, human=human, prog=f"bashon {root_command}")
+        return _handle_target(target, rest, format=fmt, prog=f"bashon {root_command}")
     except BashonError as exc:
-        _print(emit_error(exc, human=human), stream="stderr" if human else "stdout")
+        _print(emit_error(exc, format=fmt), stream="stderr" if fmt is Format.HUMAN else "stdout")
+        return 1
+    except Exception as exc:
+        _print(emit_error(exc, format=fmt), stream="stderr" if fmt is Format.HUMAN else "stdout")
         return 1
 
 
-def _split_global_flags(argv: list[str]) -> tuple[bool, bool, list[str]]:
-    human = False
+def _split_global_flags(argv: list[str]) -> tuple[Format, bool, list[str]]:
+    fmt = Format.AGENT
     help_requested = False
     index = 0
     while index < len(argv):
         token = argv[index]
         if token == "--human":
-            human = True
+            fmt = Format.HUMAN
             index += 1
+            continue
+        if token == "--format" and index + 1 < len(argv):
+            value = argv[index + 1].lower()
+            if value in _FORMAT_VALUES:
+                fmt = _FORMAT_VALUES[value]
+            else:
+                raise ParseError(f"Unknown format '{argv[index + 1]}'. Expected: agent, json, human.")
+            index += 2
             continue
         if token == "--help":
             help_requested = True
             index += 1
             continue
         break
-    return human, help_requested, argv[index:]
+    return fmt, help_requested, argv[index:]
 
 
-def _handle_builtin(command: str, argv: list[str], *, human: bool, registry: AliasRegistry) -> int:
+def _handle_builtin(command: str, argv: list[str], *, format: Format, registry: AliasRegistry) -> int:
     if command == "run":
-        return _builtin_run(argv, human=human)
+        return _builtin_run(argv, format=format)
     if command == "spec":
-        return _builtin_spec(argv, human=human)
+        return _builtin_spec(argv, format=format)
     if command == "add":
-        return _builtin_add(argv, human=human, registry=registry)
+        return _builtin_add(argv, format=format, registry=registry)
     if command == "list":
-        return _builtin_list(argv, human=human, registry=registry)
+        return _builtin_list(argv, format=format, registry=registry)
     if command == "remove":
-        return _builtin_remove(argv, human=human, registry=registry)
+        return _builtin_remove(argv, format=format, registry=registry)
     raise CommandNotFoundError(f"Unknown Bashon built-in '{command}'.")
 
 
-def _builtin_run(argv: list[str], *, human: bool) -> int:
+def _builtin_run(argv: list[str], *, format: Format) -> int:
     if not argv or argv[0] == "--help":
         spec = {
             "kind": "builtin",
@@ -99,13 +114,13 @@ def _builtin_run(argv: list[str], *, human: bool) -> int:
                 {"name": "args", "kind": "remainder", "required": False},
             ],
         }
-        _print(emit_spec(spec, human=human, header="Usage: bashon run TARGET [ARGS...]"), stream="stdout")
+        _print(emit_spec(spec, format=format, header="Usage: bashon run TARGET [ARGS...]"), stream="stdout")
         return 0
     target, rest = _require_target("bashon run", argv, "Run a target directly.")
-    return _handle_target(target, rest, human=human, prog=f"bashon run {target}")
+    return _handle_target(target, rest, format=format, prog=f"bashon run {target}")
 
 
-def _builtin_spec(argv: list[str], *, human: bool) -> int:
+def _builtin_spec(argv: list[str], *, format: Format) -> int:
     if not argv or argv[0] == "--help":
         spec = {
             "kind": "builtin",
@@ -116,7 +131,7 @@ def _builtin_spec(argv: list[str], *, human: bool) -> int:
                 {"name": "command", "kind": "positional", "required": False},
             ],
         }
-        _print(emit_spec(spec, human=human, header="Usage: bashon spec TARGET [COMMAND]"), stream="stdout")
+        _print(emit_spec(spec, format=format, header="Usage: bashon spec TARGET [COMMAND]"), stream="stdout")
         return 0
     target = argv[0]
     command_name = argv[1] if len(argv) > 1 else None
@@ -127,11 +142,11 @@ def _builtin_spec(argv: list[str], *, human: bool) -> int:
         payload = command_to_spec(collection.commands[command_name])
     else:
         payload = collection_to_spec(collection)
-    _print(emit_spec(payload, human=human, header=render_collection_help(collection, prog=f"bashon spec {target}")), stream="stdout")
+    _print(emit_spec(payload, format=format, header=render_collection_help(collection, prog=f"bashon spec {target}")), stream="stdout")
     return 0
 
 
-def _builtin_add(argv: list[str], *, human: bool, registry: AliasRegistry) -> int:
+def _builtin_add(argv: list[str], *, format: Format, registry: AliasRegistry) -> int:
     if len(argv) < 2 or argv[0] == "--help":
         spec = {
             "kind": "builtin",
@@ -142,29 +157,29 @@ def _builtin_add(argv: list[str], *, human: bool, registry: AliasRegistry) -> in
                 {"name": "target", "kind": "positional", "required": True},
             ],
         }
-        _print(emit_spec(spec, human=human, header="Usage: bashon add ALIAS TARGET"), stream="stdout")
+        _print(emit_spec(spec, format=format, header="Usage: bashon add ALIAS TARGET"), stream="stdout")
         return 0
     alias, target = argv[0], argv[1]
     registry.add(alias, target)
-    _print(emit_success({"alias": alias, "target": target, "status": "added"}, human=human), stream="stdout")
+    _print(emit_success({"alias": alias, "target": target, "status": "added"}, format=format), stream="stdout")
     return 0
 
 
-def _builtin_list(argv: list[str], *, human: bool, registry: AliasRegistry) -> int:
+def _builtin_list(argv: list[str], *, format: Format, registry: AliasRegistry) -> int:
     if argv and argv[0] == "--help":
         spec = {"kind": "builtin", "name": "list", "summary": "List registered aliases.", "parameters": []}
-        _print(emit_spec(spec, human=human, header="Usage: bashon list"), stream="stdout")
+        _print(emit_spec(spec, format=format, header="Usage: bashon list"), stream="stdout")
         return 0
     payload: Any = [{"alias": alias, "target": target} for alias, target in sorted(registry.aliases.items())]
-    if human:
+    if format is Format.HUMAN:
         text = "\n".join(f"{item['alias']}: {item['target']}" for item in payload) if payload else "No aliases registered."
         _print(text, stream="stdout")
         return 0
-    _print(emit_success(payload, human=False), stream="stdout")
+    _print(emit_success(payload, format=format), stream="stdout")
     return 0
 
 
-def _builtin_remove(argv: list[str], *, human: bool, registry: AliasRegistry) -> int:
+def _builtin_remove(argv: list[str], *, format: Format, registry: AliasRegistry) -> int:
     if not argv or argv[0] == "--help":
         spec = {
             "kind": "builtin",
@@ -172,11 +187,11 @@ def _builtin_remove(argv: list[str], *, human: bool, registry: AliasRegistry) ->
             "summary": "Remove a registered alias.",
             "parameters": [{"name": "alias", "kind": "positional", "required": True}],
         }
-        _print(emit_spec(spec, human=human, header="Usage: bashon remove ALIAS"), stream="stdout")
+        _print(emit_spec(spec, format=format, header="Usage: bashon remove ALIAS"), stream="stdout")
         return 0
     alias = argv[0]
     registry.remove(alias)
-    _print(emit_success({"alias": alias, "status": "removed"}, human=human), stream="stdout")
+    _print(emit_success({"alias": alias, "status": "removed"}, format=format), stream="stdout")
     return 0
 
 
@@ -186,23 +201,23 @@ def _require_target(prog: str, argv: list[str], summary: str) -> tuple[str, list
     return argv[0], argv[1:]
 
 
-def _handle_target(target: str, argv: list[str], *, human: bool, prog: str) -> int:
+def _handle_target(target: str, argv: list[str], *, format: Format, prog: str) -> int:
     collection = load_collection(parse_target(target))
     if len(collection.commands) == 1:
         command = next(iter(collection.commands.values()))
         values, parser, help_requested = parse_command_arguments(command, argv, prog=prog)
         if help_requested:
             _print(
-                emit_spec(command_to_spec(command), human=human, header=_format_human_help(parser.format_help())),
+                emit_spec(command_to_spec(command), format=format, header=_format_human_help(parser.format_help())),
                 stream="stdout",
             )
             return 0
         result = invoke_command(command, values)
-        _print(emit_success(result, human=human), stream="stdout")
+        _print(emit_success(result, format=format), stream="stdout")
         return 0
 
     if not argv or argv[0] == "--help":
-        _print(emit_spec(collection_to_spec(collection), human=human, header=render_collection_help(collection, prog=prog)), stream="stdout")
+        _print(emit_spec(collection_to_spec(collection), format=format, header=render_collection_help(collection, prog=prog)), stream="stdout")
         return 0
     command_name, *rest = argv
     if command_name not in collection.commands:
@@ -211,12 +226,12 @@ def _handle_target(target: str, argv: list[str], *, human: bool, prog: str) -> i
     values, parser, help_requested = parse_command_arguments(command, rest, prog=f"{prog} {command_name}")
     if help_requested:
         _print(
-            emit_spec(command_to_spec(command), human=human, header=_format_human_help(parser.format_help())),
+            emit_spec(command_to_spec(command), format=format, header=_format_human_help(parser.format_help())),
             stream="stdout",
         )
         return 0
     result = invoke_command(command, values)
-    _print(emit_success(result, human=human), stream="stdout")
+    _print(emit_success(result, format=format), stream="stdout")
     return 0
 
 

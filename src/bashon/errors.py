@@ -18,6 +18,19 @@ class CommandNotFoundError(BashonError):
 class ParseError(BashonError):
     """Raised when CLI input cannot be parsed."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        parameter: str | None = None,
+        expected_type: str | None = None,
+        received_value: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.parameter = parameter
+        self.expected_type = expected_type
+        self.received_value = received_value
+
 
 class SerializationError(BashonError):
     """Raised when a return value cannot be serialized for agent mode."""

@@ -18,6 +18,15 @@ from typing import Annotated, Any, Callable, Mapping, Sequence, Union, get_args,
 
 from .errors import CommandNotFoundError, ParseError, SerializationError, UnsupportedCallableError
 
+
+class Format(Enum):
+    """Output format for Bashon CLI responses."""
+
+    AGENT = "agent"
+    JSON = "json"
+    HUMAN = "human"
+
+
 BASHON_META_ATTR = "__bashon_meta__"
 _DOC_PARAM_RE = re.compile(r"^:param\s+([a-zA-Z_][\w]*)\s*:\s*(.+)$")
 _DOC_GOOGLE_RE = re.compile(r"^([a-zA-Z_][\w]*)\s*(?:\([^)]+\))?\s*:\s*(.+)$")
@@ -269,7 +278,7 @@ def parse_command_arguments(
         parser.add_argument(
             *option_strings,
             dest=parameter.name,
-            required=parameter.required,
+            required=False,
             default=None if _is_missing(parameter.default) else parameter.default,
             help=argparse.SUPPRESS if parameter.hidden else parameter.help,
         )
@@ -288,7 +297,11 @@ def parse_command_arguments(
             continue
         raw_value = getattr(namespace, parameter.name)
         if raw_value is None and _is_missing(parameter.default):
-            raise ParseError(f"Missing value for '{parameter.name}'.")
+            raise ParseError(
+                f"Missing value for '{parameter.name}'.",
+                parameter=parameter.name,
+                expected_type=_type_label(parameter.annotation),
+            )
         if raw_value is None and not _is_missing(parameter.default):
             values[parameter.name] = parameter.default
             continue
@@ -318,7 +331,7 @@ def invoke_command(command: CommandSpec, values: Mapping[str, Any]) -> Any:
 def command_to_spec(command: CommandSpec) -> dict[str, Any]:
     """Return a machine-readable spec for a command."""
 
-    return {
+    spec: dict[str, Any] = {
         "kind": "command",
         "name": command.name,
         "callable": command.qualname,
@@ -327,6 +340,10 @@ def command_to_spec(command: CommandSpec) -> dict[str, Any]:
         "source": command.source,
         "parameters": [_parameter_to_spec(parameter) for parameter in command.parameters if not parameter.hidden],
     }
+    return_hints = _safe_type_hints(command.signature_target)
+    if "return" in return_hints:
+        spec["return_type"] = _type_label(return_hints["return"])
+    return spec
 
 
 def collection_to_spec(collection: CommandCollection) -> dict[str, Any]:
@@ -361,7 +378,7 @@ def render_root_help(aliases: Mapping[str, str]) -> str:
     """Render human help for the root CLI."""
 
     lines = [
-        "Usage: bashon [--human] <command|alias> ...",
+        "Usage: bashon [--human | --format agent|json|human] <command|alias> ...",
         "",
         "Bashon is an agent-first Python-to-CLI toolkit.",
         "",
@@ -388,35 +405,57 @@ def render_collection_help(collection: CommandCollection, *, prog: str) -> str:
     return "\n".join(lines)
 
 
-def emit_success(payload: Any, *, human: bool) -> str:
+def emit_success(payload: Any, *, format: Format) -> str:
     """Serialize a successful result for the active mode."""
 
-    if human:
+    serialized = _serialize_jsonable(payload)
+    if format is Format.HUMAN:
         return _render_human_result(payload)
-    envelope = {"ok": True, "mode": "agent", "result": _serialize_jsonable(payload)}
-    return json.dumps(envelope, indent=2, sort_keys=True)
+    if format is Format.JSON:
+        envelope = {"__bashon__": "1", "ok": True, "mode": "agent", "result_type": _result_type_label(serialized), "result": serialized}
+        return json.dumps(envelope, indent=2, sort_keys=True)
+    # Default: agent text-delimited format
+    type_label = _result_type_label(serialized)
+    body = json.dumps(serialized, indent=2, sort_keys=True) if not isinstance(serialized, str) else serialized
+    return f"[BASHON:OK]\n[RESULT_TYPE:{type_label}]\n{body}"
 
 
-def emit_error(error: Exception, *, human: bool) -> str:
+def emit_error(error: Exception, *, format: Format) -> str:
     """Serialize an error for the active mode."""
 
-    if human:
+    if format is Format.HUMAN:
         return str(error)
-    envelope = {
-        "ok": False,
-        "mode": "agent",
-        "error": {"type": error.__class__.__name__, "message": str(error)},
-    }
-    return json.dumps(envelope, indent=2, sort_keys=True)
+    error_detail: dict[str, Any] = {"type": error.__class__.__name__, "message": str(error)}
+    if hasattr(error, "parameter") and error.parameter is not None:
+        error_detail["parameter"] = error.parameter
+    if hasattr(error, "expected_type") and error.expected_type is not None:
+        error_detail["expected_type"] = error.expected_type
+    if hasattr(error, "received_value") and error.received_value is not None:
+        error_detail["received_value"] = str(error.received_value)
+    if format is Format.JSON:
+        envelope = {"__bashon__": "1", "ok": False, "mode": "agent", "error": error_detail}
+        return json.dumps(envelope, indent=2, sort_keys=True)
+    # Default: agent text-delimited format
+    lines = [f"[BASHON:ERROR]", f"[ERROR_TYPE:{error.__class__.__name__}]"]
+    if error_detail.get("parameter"):
+        lines.append(f"[PARAMETER:{error_detail['parameter']}]")
+    if error_detail.get("expected_type"):
+        lines.append(f"[EXPECTED_TYPE:{error_detail['expected_type']}]")
+    lines.append(str(error))
+    return "\n".join(lines)
 
 
-def emit_spec(spec: Mapping[str, Any], *, human: bool, header: str | None = None) -> str:
+def emit_spec(spec: Mapping[str, Any], *, format: Format, header: str | None = None) -> str:
     """Serialize help/spec output for the active mode."""
 
-    if human:
+    if format is Format.HUMAN:
         return header or json.dumps(spec, indent=2, sort_keys=True)
-    envelope = {"ok": True, "mode": "agent", "spec": dict(spec)}
-    return json.dumps(envelope, indent=2, sort_keys=True)
+    if format is Format.JSON:
+        envelope = {"__bashon__": "1", "ok": True, "mode": "agent", "spec": dict(spec)}
+        return json.dumps(envelope, indent=2, sort_keys=True)
+    # Default: agent text-delimited format
+    body = json.dumps(dict(spec), indent=2, sort_keys=True)
+    return f"[BASHON:OK]\n[SPEC]\n{body}"
 
 
 def _iter_related_objects(obj: Any) -> Sequence[Any]:
@@ -1054,8 +1093,39 @@ def _parameter_to_spec(parameter: ParameterSpec) -> dict[str, Any]:
     return payload
 
 
+def _result_type_label(serialized: Any) -> str:
+    """Map an already-serialized value to a JSON Schema type name."""
+
+    if serialized is None:
+        return "null"
+    if isinstance(serialized, bool):
+        return "boolean"
+    if isinstance(serialized, int):
+        return "integer"
+    if isinstance(serialized, float):
+        return "number"
+    if isinstance(serialized, str):
+        return "string"
+    if isinstance(serialized, dict):
+        return "object"
+    if isinstance(serialized, list):
+        return "array"
+    return "string"
+
+
 def _serialize_jsonable(value: Any) -> Any:
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        # Detect JSON strings and unwrap them to avoid double-encoding.
+        stripped = value.strip()
+        if stripped and stripped[0] in ("{", "["):
+            try:
+                parsed = json.loads(stripped)
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
         return value
     if isinstance(value, bytes):
         try:
